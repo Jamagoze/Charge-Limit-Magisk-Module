@@ -1,1 +1,124 @@
-# Charge-Limit-Magisk-Module
+# Charge Limit (Magisk module)
+
+Stops charging at a battery percentage you choose (1-99%, default 80) and resumes a few percent lower. Pure shell and sysfs: no Zygisk, no APK, no accessibility service.
+
+Current version: **v1.5**
+
+## Does it only work on HyperOS?
+
+No. Nothing in it is HyperOS-specific. It needs:
+
+- Root with Magisk 20.4 or newer
+- A kernel that exposes a writable switch that turns charging off
+
+The module tries these switches in order and keeps the first one that really stops charging:
+
+| Node | Stop | Resume |
+|---|---|---|
+| `power_supply/battery/charging_enabled` | 0 | 1 |
+| `power_supply/battery/battery_charging_enabled` | 0 | 1 |
+| `qcom-battery/battery_charging_enabled` | 0 | 1 |
+| `power_supply/battery/charge_disable` | 1 | 0 |
+| `power_supply/battery/input_suspend` | 1 | 0 |
+| `qcom-battery/input_suspend` | 1 | 0 |
+| `power_supply/usb/input_suspend` | 1 | 0 |
+| `power_supply/main/input_suspend` | 1 | 0 |
+| `power_supply/battery/batt_slate_mode` | 1 | 0 |
+
+Likely to work: Xiaomi / Redmi / POCO (MIUI, HyperOS) and other Qualcomm devices with these nodes, including custom ROMs.
+May need a node added: Pixel, OnePlus / Oppo, Motorola, MediaTek.
+May not work: devices whose kernel has no writable charging switch, and some Samsung One UI builds.
+
+Confirmed device: Redmi Pad SE, HyperOS, Android 14 (Snapdragon 680, charger chip SC89890H, switch `qcom-battery/input_suspend`).
+
+To check another device, run `su -c stopcharge nodes` and look for a file with "charge" or "suspend" in its name.
+
+## Install
+
+1. Flash `stop_charge_limit.zip` in Magisk (Modules, Install from storage).
+2. Reboot.
+3. Set your limit: `su -c stopcharge 80`
+
+Updating: flash the new zip over the old one and reboot. Your settings are kept.
+
+## Commands (Termux, root)
+
+| Command | What it does |
+|---|---|
+| `su -c stopcharge 70` | Set the limit (1-99). Applies immediately. |
+| `su -c stopcharge` | Show limit, battery, mode, paused state, node. |
+| `su -c stopcharge gap 3` | Resume charging this many percent below the limit (1-50, default 2). |
+| `su -c stopcharge wake rtc` | Deep-sleep friendly mode using the RTC alarm (default). |
+| `su -c stopcharge wake on` | Keep the CPU awake while plugged in (most reliable, uses a little more power). |
+| `su -c stopcharge wake off` | No wake handling. Only acts while the tablet is awake. |
+| `su -c stopcharge hw on` / `hw off` | Use a kernel threshold node if the device has one (see below). |
+| `su -c stopcharge nodes` | List battery files, for diagnosing a new device. |
+| `su -c stopcharge rtctest` | Test whether the RTC alarm wakes the device from sleep. |
+
+Settings live in `/data/adb/stopcharge/config`:
+
+```
+LIMIT=80
+GAP=2
+WAKE=2
+HW=0
+```
+
+`WAKE`: 2 = RTC alarm, 1 = wakelock, 0 = off. After editing the file by hand, run `su -c sh /data/adb/modules/stopcharge/check.sh` to apply it now.
+
+## How it works
+
+- No timer or polling loop. A `logcat` process waits on Android's battery events (level, status, plug and unplug) and runs `check.sh` when one arrives. Unplugged and idle, nothing runs.
+- Deep sleep: while the CPU is suspended no software can run, so in RTC mode the module sets an RTC alarm for shortly before the battery should reach the limit (estimated from the current charge speed and re-planned on every wake). While paused at the limit it wakes about once an hour to check for the resume level.
+- If the RTC is unusable, it falls back to the wakelock method on its own.
+- Hardware mode: if the kernel has a real percentage threshold node (`charge_control_end_threshold`, `batt_full_capacity`), `hw on` writes the limit there and the module does nothing else, so deep sleep needs no help.
+- Charging control: stop and resume go through the node found in the table above. The detected node is stored in `/data/adb/stopcharge/node`.
+
+## Files
+
+| Path | Purpose |
+|---|---|
+| `/data/adb/stopcharge/config` | Your settings |
+| `/data/adb/stopcharge/node` | Detected charging switch |
+| `/data/adb/stopcharge/state` | 1 if charging is currently paused |
+| `/data/adb/stopcharge/daemon.pid`, `rtc.pid` | Running processes |
+| `/data/adb/stopcharge/rtcfail` | Exists if the RTC alarm was unusable |
+| `/data/adb/stopcharge/wl` | Exists while the wakelock is held |
+
+`log.txt` is no longer written since v1.4 and can be deleted.
+
+## Notes
+
+- HyperOS "Charging protection" or similar battery settings can fight the module. Turn them off.
+- `charge_control_limit` on the Redmi Pad SE stops the charger chip but does not resume until the cable is replugged, so the module does not use it.
+- On the Redmi Pad SE, `voltage_max` and `constant_charge_current_max` are read-only, so there is no voltage-based limit.
+
+## Uninstall
+
+Remove the module in Magisk and reboot. It restores charging, releases the wakelock, clears the RTC alarm and deletes `/data/adb/stopcharge`.
+
+## Version history
+
+**v1.5**
+- RTC alarm mode for deep sleep, now the default. The tablet is woken shortly before the limit and while paused.
+- `stopcharge rtctest` to check the RTC on a device.
+- Falls back to the wakelock method if the RTC is unusable.
+
+**v1.4**
+- All logging removed (no `log.txt`, no `stopcharge log`).
+- `stopcharge wake on|off` and hardware mode (`hw on|off`).
+- `stopcharge nodes` for diagnostics.
+
+**v1.3**
+- Wakelock held while plugged in or paused, so the limit works with the screen off.
+
+**v1.2**
+- Event-driven: replaces polling with a `logcat` listener on battery events. No CPU use while unplugged.
+- `stopcharge <limit>` applies immediately.
+
+**v1.1**
+- Lighter polling: shell builtins instead of spawning `cat`, adaptive intervals (5 s near the limit, 60 s unplugged).
+- Log trimmed to the latest lines instead of being wiped.
+
+**v1.0**
+- First release. Automatic charging-switch detection, limit 1-99%, resume gap, `stopcharge` command, polling every 10-20 s.
