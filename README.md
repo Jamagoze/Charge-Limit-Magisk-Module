@@ -2,7 +2,7 @@
 
 Stops charging at a battery percentage you choose (1-99%, default 80) and resumes a few percent lower. Pure shell and sysfs: no Zygisk, no APK, no accessibility service.
 
-Current version: **v1.5**
+Current version: **v1.7**
 
 ## Does it only work on HyperOS?
 
@@ -46,6 +46,7 @@ Updating: flash the new zip over the old one and reboot. Your settings are kept.
 | Command | What it does |
 |---|---|
 | `su -c stopcharge 70` | Set the limit (1-99). Applies immediately. |
+| `su -c stopcharge off` | Turn the limit off (normal charging). |
 | `su -c stopcharge` | Show limit, battery, mode, paused state, node. |
 | `su -c stopcharge gap 3` | Resume charging this many percent below the limit (1-50, default 2). |
 | `su -c stopcharge wake rtc` | Deep-sleep friendly mode using the RTC alarm (default). |
@@ -68,11 +69,13 @@ HW=0
 
 ## How it works
 
-- No timer or polling loop. A `logcat` process waits on Android's battery events (level, status, plug and unplug) and runs `check.sh` when one arrives. Unplugged and idle, nothing runs.
-- Deep sleep: while the CPU is suspended no software can run, so in RTC mode the module sets an RTC alarm for shortly before the battery should reach the limit (estimated from the current charge speed and re-planned on every wake). While paused at the limit it wakes about once an hour to check for the resume level.
+- A small timer runs the check every 5-10 s while charging and every 60 s otherwise. It only counts while the tablet is awake, so it adds no wake-ups in deep sleep.
+- Deep sleep: while the CPU is suspended no software can run, so the module always keeps an RTC alarm armed. While charging it is set for about half of the estimated time to the limit (re-planned on every wake). While paused it wakes about once an hour to check for the resume level. While unplugged it wakes every 30 min when far below the limit, every 10 min when within 12%, and every 5 min within 3%.
+- If the battery is already above the limit, charging is blocked in advance, even when unplugged, so plugging in does not charge. `stopcharge off` disables this.
 - If the RTC is unusable, it falls back to the wakelock method on its own.
-- Hardware mode: if the kernel has a real percentage threshold node (`charge_control_end_threshold`, `batt_full_capacity`), `hw on` writes the limit there and the module does nothing else, so deep sleep needs no help.
+- Hardware mode: if the kernel has a real percentage threshold node (`charge_control_end_threshold`, `batt_full_capacity`), `hw on` writes the limit there and the module does nothing else.
 - Charging control: stop and resume go through the node found in the table above. The detected node is stored in `/data/adb/stopcharge/node`.
+- Android's battery event log (`logcat` battery_level) was tried in v1.2-v1.6 but never fires on HyperOS, so it is no longer used.
 
 ## Files
 
@@ -98,6 +101,16 @@ HW=0
 Remove the module in Magisk and reboot. It restores charging, releases the wakelock, clears the RTC alarm and deletes `/data/adb/stopcharge`.
 
 ## Version history
+
+**v1.7**
+- Replaced the battery-event listener (never fired on HyperOS) with an awake-only timer plus an always-armed RTC alarm for deep sleep.
+- Charging is blocked in advance when the battery is already above the limit.
+- `stopcharge off` to disable the limit.
+
+**v1.6**
+- `stopcharge` status now shows diagnostics: whether the event listener and RTC waiter are running, when the last battery event and RTC wake happened, when the last check ran, and the planned alarm. Single overwritten files, no log growth.
+- RTC alarm now wakes at half of the estimated time to the limit (was 80%), capped at 30 minutes, so it lands earlier.
+- Safer lock handling so a killed check can never block later checks.
 
 **v1.5**
 - RTC alarm mode for deep sleep, now the default. The tablet is woken shortly before the limit and while paused.
